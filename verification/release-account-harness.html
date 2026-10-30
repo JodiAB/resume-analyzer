@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>JobPilot release isolation verification</title>
+<style>body{font:16px system-ui;max-width:1050px;margin:24px}button{padding:12px;margin:5px}pre{white-space:pre-wrap;background:#f5f5f5;padding:16px}input,select{padding:8px}</style>
+<h1>Milestone 6A real-network account verification</h1>
+<p>Synthetic data only. This local page is excluded from the production application. No employer is contacted. Sign in only through Puter's normal UI. Never share credentials, cookies, tokens, a HAR or raw network headers.</p>
+<p><strong>Keep this page open. Do not refresh or close it before both accounts are cleaned up.</strong> The run and captured paths stay in memory; only sanitized results are exported.</p>
+<p id="session">Loading SDK…</p><p id="run"></p>
+<button id="signin">Sign in through Puter</button><button id="signout">Sign out, keep this page</button><button id="refresh">Refresh verified identity</button>
+<h2>1. Create isolated fixtures</h2><p>Use empty disposable accounts. Creation refuses to add a second history to existing app records. These are valid synthetic profile/discovery/assessment/preparation/application records, plus an independent synthetic PDF file for storage isolation.</p>
+<button id="create-a">Create Account A fixtures</button><button id="create-b">Create Account B fixtures</button>
+<h2>2. Test both directions</h2><p>Under B, test access to A. Return to A and test access to B. Reads and deletion attempts target only captured synthetic fixtures. Return to each owner to verify every original byte survived.</p>
+<button id="b-to-a">As B, test A isolation</button><button id="a-to-b">As A, test B isolation</button>
+<button id="verify-a">As A, verify A survived</button><button id="verify-b">As B, verify B survived</button>
+<h2>3. Real active-operation races</h2>
+<p>Return to A first. Setup creates a complete review-ready synthetic application locally; it does not approve or submit it. Each race uses the production guarded operation. Automatic sign-out waits for transferred bytes on the selected target request, not a pending SDK promise. Use browser network throttling for real transfers; no artificial held results are used. Generation loads the private preparation record through Puter before local rendering; only that private read supplies Puter-network evidence. Then sign into B and click Finish race. SDK request timings are recorded without headers/content. A pending RPC is not proof of bytes on the wire. Requests that finish before an identity change are NOT TESTED for overlap. Timeouts/unknown errors are BLOCKED, never PASS.</p>
+<button id="prepare">As A, prepare review-ready package</button>
+<label>Race operation <select id="kind"><option value="read">PDF read</option><option value="upload">Synthetic upload</option><option value="delete">Auxiliary deletion</option><option value="generate">Generation pipeline: private preparation read, then local render</option><option value="approve">Approval read/validation</option><option value="approve-write">Approval persistence write</option><option value="download">Approved document preparation</option></select></label>
+<button id="race">As A, start measured operation</button><button id="finish">After signing into B, finish race</button>
+<p>For download testing only, first explicitly approve the exact synthetic package under A. No application-page handoff is offered by this harness.</p><button id="approve">As A, explicitly approve synthetic package</button>
+<h2>4. Post-race audit, cleanup and export</h2><p>After transport settlement, audit both verified owners. A PASS is a snapshot only. Unexpected A-only transfer bytes in B are a release-blocking FAIL.</p><button id="audit-a">As A, audit post-race storage</button><button id="audit-b">As B, audit post-race storage</button><button id="clean-a">As A, clean only captured A fixtures</button><button id="clean-b">As B, clean only captured B fixtures</button><button id="export">Export sanitized results</button>
+<pre id="results">No tests run.</pre>
+<script src="https://js.puter.com/v2/"></script><script type="module" src="/verification/release-account-harness.js"></script></html>

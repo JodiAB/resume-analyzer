@@ -1,0 +1,234 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>JobPilot disposable-account verification</title>
+<style>body{font:16px system-ui;max-width:1000px;margin:32px}button{padding:10px;margin:5px}pre{white-space:pre-wrap;background:#f5f5f5;padding:15px}</style>
+<h1>Disposable-account verification</h1>
+<p>Use only test accounts A and B. Synthetic PDFs and test KV keys only. Passwords and tokens are never requested, displayed or exported by this harness. Deny any request for broader sharing or access to another account.</p>
+<p id="session">Loading Puter SDK...</p>
+<button id="signin">Sign in through Puter</button><button id="signout">Sign out, keep test page</button>
+<button id="test-ai">Test Puter AI in free test mode</button>
+<section><h2>Recover Account A after a refresh</h2><p>Signed in but no account label? That is expected after a refresh. This read-only check restores the existing synthetic fixture; it does not upload another file.</p>
+<label for="recovery-run">Original test run</label> <input id="recovery-run" size="40" value="c1b31397-3dd3-4a57-945a-c6235107b7ae">
+<button id="recover-a">Recover original A fixture</button></section>
+<section><h2>Resume B cleanup after an interrupted check</h2><p>Stay signed into B. Uses the original run ID above; checks only its synthetic B file and key. It does not rerun isolation tests or create another fixture.</p><button id="cleanup-b">Resume B cleanup</button></section>
+<button id="create-a">Create synthetic A fixture</button><button id="test-b">Run B isolation checks</button><button id="verify-a">Verify A survived and clean test fixtures</button>
+<button id="arm-read">Hold real A read result</button><button id="arm-upload">Hold real A upload result</button><button id="arm-delete">Hold real A auxiliary deletion result</button><button id="release">Release held result after switching accounts</button>
+<p>Held-result checks finish the guarded SDK request under A, then delay consumer delivery while you switch accounts. Production request timeouts are unchanged. These checks do not prove an on-the-wire switch or an SDK request remaining in flight. No live paid AI call is made.</p>
+<button id="export">Download sanitized evidence JSON</button><pre id="results">No tests run</pre>
+<script src="https://js.puter.com/v2/"></script>
+<script type="module">
+import { captureSession, usePuterStore } from '/app/lib/puter.ts';
+import { parseFeedback } from '/app/lib/validation.ts';
+import { recoverAFixture, RecoveryError } from '/verification/recover-fixture.ts';
+import { cleanupBFixture } from '/verification/cleanup-fixture.ts';
+import { deliverHeldResult } from '/verification/held-result.ts';
+import { cleanupAuxiliaryFixtures } from '/verification/cleanup-auxiliary.ts';
+let run = crypto.randomUUID();
+const results = [];
+const priorRuns = [];
+const accounts = {};
+const fixtures = {};
+const extras = [];
+let held;
+const sdk = () => window.puter;
+const state = () => usePuterStore.getState();
+const record = (test, status, evidence='') => {
+  results.push({test,status,evidence,at:new Date().toISOString()});
+  document.querySelector('#results').textContent = JSON.stringify({run,results,priorRuns},null,2);
+};
+const code = error => String(error?.code || error?.name || 'unknown');
+const denied = error => /permission|forbidden|not_found|does_not_exist|access_denied/i.test(code(error));
+const missing = error => /^(subject_does_not_exist|not_found)$/.test(code(error));
+const failed = () => results.some(result => result.status==='FAIL');
+const sha = async blob => [...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
+const active = async () => { if(!await sdk().auth.isSignedIn()) throw new Error('Sign in first'); return (await sdk().auth.getUser()).uuid; };
+const fixture = async alias => {
+  const base = await (await fetch('/tests/fixtures/pdf/synthetic-two-page.pdf')).arrayBuffer();
+  const file = new File([base,'\n% SYNTHETIC '+alias+' '+run+'\n'],`synthetic-${alias}.pdf`,{type:'application/pdf'});
+  const uploaded = await state().fs.upload([file],`jobpilot/resumes/gate-${run}-${alias.toLowerCase()}`);
+  if(!uploaded?.path) throw new Error('Upload missing path');
+  const key = `jobpilot-gate:${run}:${alias}`;
+  const marker = `SYNTHETIC-${alias}-${run}`;
+  if(!await state().kv.set(key,marker)) throw new Error('KV write failed');
+  fixtures[alias] = {path:uploaded.path,key,marker,hash:await sha(file)};
+  record(alias+' fixture created','PASS','Synthetic PDF and private test key; no public links');
+};
+function bind(id, action) {
+  const button=document.querySelector('#'+id);
+  button.onclick = async () => {
+    button.disabled=true;
+    try { await action(); } catch(error) {
+      const explanations={A_KEY_NOT_FOUND:'The original A test key is not visible in this account. Check that you used account A and the original page URL.',A_ROOT_UNCONFIRMED:'Application storage root could not be confirmed.',A_READ_UNCONFIRMED:'The original synthetic PDF could not be read. No new fixture was created.',A_FILE_MISMATCH:'PDF content does not match the original synthetic fixture. Recovery stopped.',INVALID_RUN:'Use the original run ID shown above.'};
+      const cleanupExplanations={B_KEY_UNCONFIRMED:'The B test key is not present or does not match. Cleanup may already have completed, or this may be a different account. No further deletion performed.',B_ROOT_UNCONFIRMED:'The current application storage root could not be verified.',B_FILE_STAT_UNCONFIRMED:'The SDK could not confirm whether the B synthetic file exists. Cleanup stopped.',B_FILE_MISMATCH:'The file does not match the exact synthetic B fixture. It was not deleted.',B_FILE_DELETE_UNCONFIRMED:'The B file remains present; its test key was retained.',B_KEY_DELETE_UNCONFIRMED:'The B file is absent, but key removal could not be confirmed.'};
+      record(id,'BLOCKED',explanations[error?.code] || cleanupExplanations[error?.code] || code(error));
+    }
+    finally { button.disabled=false; }
+  };
+}
+function renderSession(value) {
+  const alias = Object.entries(accounts).find(([,id])=>id===value.auth.user?.uuid)?.[0];
+  document.querySelector('#session').textContent = value.isLoading ? 'Verifying session...' : value.auth.isAuthenticated ? alias ? 'Authenticated test account: '+alias : 'Signed in. Recover the original A fixture below to restore its label.' : 'Signed out. Use the normal Puter UI.'+(value.error?' '+value.error:'');
+}
+usePuterStore.subscribe(renderSession);
+usePuterStore.getState().init();
+bind('signin',()=>state().auth.signIn());
+bind('signout',()=>state().auth.signOut());
+bind('cleanup-b',async()=>{
+  const owner=await active();
+  await state().auth.checkAuthStatus();
+  const assertSession=captureSession();
+  const target=document.querySelector('#recovery-run').value.trim().toLowerCase();
+  const response=await fetch('/tests/fixtures/pdf/synthetic-two-page.pdf');
+  if(!response.ok) throw new Error('Synthetic fixture source unavailable');
+  const expected=new Blob([await response.arrayBuffer(),'\n% SYNTHETIC B '+target+'\n'],{type:'application/pdf'});
+  const outcome=await cleanupBFixture(target,expected,{assertSession,get:state().kv.get,read:state().fs.read,getRoot:async()=>(await sdk().fs.stat('.')).path,stat:path=>sdk().fs.stat(path),deleteFile:state().fs.delete,deleteKey:state().kv.delete,sha});
+  assertSession();
+  if(await active()!==owner) throw new Error('Session changed');
+  assertSession();
+  if(run!==target && results.length) priorRuns.push({run,results:results.splice(0)});
+  run=target;
+  accounts.B=owner;renderSession(state());
+  record('B own fixture cleanup','PASS','B synthetic file and key confirmed absent; '+JSON.stringify(outcome));
+});
+bind('recover-a',async()=>{
+  if(fixtures.A || held) throw new Error('Fixture references already present; do not replace');
+  const owner=await active();
+  await state().auth.checkAuthStatus();
+  const assertSession=captureSession();
+  const target=document.querySelector('#recovery-run').value.trim().toLowerCase();
+  const response=await fetch('/tests/fixtures/pdf/synthetic-two-page.pdf');
+  if(!response.ok) throw new Error('Synthetic fixture source unavailable');
+  const expected=new Blob([await response.arrayBuffer(),'\n% SYNTHETIC A '+target+'\n'],{type:'application/pdf'});
+  const recovered=await recoverAFixture(target,expected,{assertSession,get:state().kv.get,read:state().fs.read,getRoot:async()=> (await sdk().fs.stat('.')).path,sha});
+  assertSession();
+  if(await active()!==owner) throw new Error('Session changed');
+  assertSession();
+  if(run!==target && results.length) priorRuns.push({run,results:results.splice(0)});
+  run=target;accounts.A=owner;fixtures.A=recovered;
+  renderSession(state());
+  record('A fixture recovered','PASS','Existing synthetic PDF and private test key verified; no writes or new fixture');
+});
+bind('test-ai',async()=>{
+  const before=await active();
+  // Official testMode overload: no API credits; no document attachments.
+  const response=await sdk().ai.chat('SYNTHETIC VERIFICATION ONLY',true,{max_tokens:16});
+  if(await active()!==before) throw new Error('Session changed during test mode');
+  let accepted=false;
+  try {parseFeedback(response);accepted=true;}catch{}
+  record('Puter AI SDK test mode','PASS',accepted?'Response passed the feedback schema':'Non-feedback test response rejected by the app validator; no analysis saved');
+});
+bind('create-a',async()=>{
+  const owner = await active();
+  if(fixtures.A) throw new Error('A fixture already exists; do not overwrite');
+  if(accounts.A && accounts.A!==owner) throw new Error('Account A changed');
+  accounts.A=owner;
+  await state().auth.checkAuthStatus();
+  await fixture('A');
+});
+bind('test-b',async()=>{
+  const owner=await active();
+  if(!accounts.A || !fixtures.A) throw new Error('Create A first');
+  if(owner===accounts.A) { record('distinct accounts','BLOCKED','B is still A; no cross-account checks run');return; }
+  accounts.B=owner; await state().auth.checkAuthStatus();
+  record('distinct accounts','PASS','SDK identities differ; identifiers kept in memory only');
+  try {
+    const blob=await sdk().fs.read(fixtures.A.path);
+    record('raw service B reads A PDF','FAIL','Service returned a value for A path; no content exported');
+  } catch(error) { record('raw service B reads A PDF',denied(error)?'PASS':'BLOCKED',code(error)); }
+  if(failed()) return;
+  try { const value=await sdk().kv.get(fixtures.A.key); record('raw service B reads A key',value===null?'PASS':'FAIL',value===null?'Key absent in B namespace':'Unexpected key value; no content exported'); }
+  catch(error) { record('raw service B reads A key','BLOCKED',code(error)); }
+  if(failed()) return;
+  try { await state().fs.read(fixtures.A.path); record('app B reads A PDF','FAIL','Unexpected success'); }
+  catch(error) { record('app B reads A PDF',String(error?.message).includes('outside')?'PASS':'BLOCKED',code(error)); }
+  if(failed()) return;
+  try { await state().fs.delete(fixtures.A.path); record('app B deletes A PDF','FAIL','Unexpected success'); }
+  catch(error) { record('app B deletes A PDF',String(error?.message).includes('outside')?'PASS':'BLOCKED',code(error)); }
+  if(failed()) return;
+  // Raw SDK authorization is deliberately checked, not inferred from app guards.
+  try { await sdk().fs.delete(fixtures.A.path); record('raw service B deletes A PDF','FAIL','Service accepted delete of A synthetic fixture'); }
+  catch(error) { record('raw service B deletes A PDF',denied(error)?'PASS':'BLOCKED',code(error)); }
+  if(results.some(r=>r.status==='FAIL')) return;
+  await fixture('B');
+  await removeAndConfirm(fixtures.B.path);
+  if(!await state().kv.delete(fixtures.B.key) || await sdk().kv.get(fixtures.B.key)!==null) throw new Error('B key cleanup unconfirmed');
+  record('B own fixture cleanup','PASS','Only B synthetic file/key deleted');
+});
+bind('verify-a',async()=>{
+  if(held) throw new Error('Release the held consumer result before final cleanup');
+  if(await active()!==accounts.A) throw new Error('Return to A first');
+  await state().auth.checkAuthStatus();
+  const blob=await state().fs.read(fixtures.A.path);
+  const value=await state().kv.get(fixtures.A.key);
+  record('A survived B deletion attempts',await sha(blob)===fixtures.A.hash && value===fixtures.A.marker?'PASS':'FAIL','Compared full synthetic PDF SHA-256 and A marker');
+  if(results.some(r=>r.status==='FAIL')) return;
+  const assertSession=captureSession();
+  const auxiliary=await cleanupAuxiliaryFixtures(run,{assertSession,get:state().kv.get,getRoot:async()=>(await sdk().fs.stat('.')).path,list:state().fs.readDir,read:state().fs.read,deleteFile:state().fs.delete,sha});
+  assertSession();
+  for(let i=extras.length-1;i>=0;i--)if(extras[i].startsWith(auxiliary.directory+'/'))extras.splice(i,1);
+  record('A auxiliary fixture cleanup','PASS',`${auxiliary.deleted} matching synthetic auxiliary files removed; dedicated run folder confirmed empty`);
+  let cleanupConfirmed=true;
+  try {
+    await removeAndConfirm(fixtures.A.path);
+    if(!await state().kv.delete(fixtures.A.key) || await sdk().kv.get(fixtures.A.key)!==null) throw new Error('A key cleanup unconfirmed');
+  } catch(error) { cleanupConfirmed=false; record('A main cleanup','BLOCKED',code(error)); }
+  for(const path of extras) { try {await removeAndConfirm(path);}catch(error){cleanupConfirmed=false;record('auxiliary cleanup','BLOCKED',code(error));} }
+  record('A own fixture cleanup',cleanupConfirmed?'PASS':'BLOCKED',cleanupConfirmed?'All captured synthetic targets confirmed absent':'One or more cleanup targets remain unconfirmed');
+});
+async function removeAndConfirm(path) {
+  try { await state().fs.delete(path); } catch(error) { if(!missing(error)) throw error; }
+  let absent=false;
+  try { await sdk().fs.stat(path); } catch(error) { if(missing(error)) absent=true; else throw error; }
+  if(!absent) throw new Error('File cleanup unconfirmed');
+}
+async function arm(kind) {
+  if(held) throw new Error('Release the existing held result first');
+  if(await active()!==accounts.A || !fixtures.A) throw new Error('Account A fixture required');
+  await state().auth.checkAuthStatus();
+  let release;
+  const gate=new Promise(resolve=>release=resolve);
+  const assertSession=captureSession();
+  let prepared;
+  const ready=new Promise(resolve=>prepared=resolve);
+  const attempt={kind,release,pending:undefined};
+  held=attempt;
+  const request=async()=>{
+    if(kind==='read') {
+      const value=await state().fs.read(fixtures.A.path);
+      assertSession();
+      if(!value || await sha(value)!==fixtures.A.hash) throw new Error('Synthetic A read content unconfirmed');
+      assertSession();
+      return value;
+    }
+    if(kind==='upload') {
+      const file=await state().fs.upload([new File(['SYNTHETIC AUX '+run],'aux.txt')],`jobpilot/resumes/gate-${run}-aux`);
+      if(!file?.path) throw new Error('Auxiliary upload failed');
+      extras.push(file.path);
+      return file;
+    }
+    const file=await state().fs.upload([new File(['SYNTHETIC DELETE AUX '+run],'delete-aux.txt')],`jobpilot/resumes/gate-${run}-aux`);
+    if(!file?.path) throw new Error('Auxiliary upload failed');
+    extras.push(file.path);
+    assertSession();
+    await state().fs.delete(file.path);
+    assertSession();
+    const index=extras.indexOf(file.path);if(index>=0) extras.splice(index,1);
+  };
+  attempt.pending=deliverHeldResult(request,gate,assertSession,()=>{
+    record(kind+' real service response','PASS','Guarded SDK request finished under A; consumer delivery held locally');
+    prepared(true);
+  }).then(()=>record(kind+' stale consumer result','FAIL','Consumer accepted data from an old session'),error=>{
+    record(kind+' stale consumer result',String(error?.message).includes('Session changed')?'PASS':'BLOCKED',String(error?.message).includes('Session changed')?'Captured-session check rejected delayed consumer delivery; RPC already finished':code(error));
+    prepared(false);
+  });
+  if(!await ready) {if(held===attempt)held=undefined;return;}
+  record(kind+' armed','PASS','Consumer result held. Sign out, sign into B, then release; no manual-switch RPC deadline');
+}
+bind('arm-read',()=>arm('read')); bind('arm-upload',()=>arm('upload')); bind('arm-delete',()=>arm('delete'));
+bind('release',async()=>{
+  if(!held || await active()===accounts.A) throw new Error('Switch to B before releasing');
+  held.release(); await held.pending; held=undefined;
+});
+bind('export',async()=>{
+  const blob=new Blob([JSON.stringify({run,results,priorRuns},null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob); const link=document.createElement('a');link.href=url;link.download='live-account-evidence.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
+</script></html>

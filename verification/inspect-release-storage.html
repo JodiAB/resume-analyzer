@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Read-only release storage audit</title>
+<style>body{font:16px system-ui;max-width:900px;margin:32px}button,input,select{padding:12px;margin:6px}pre{white-space:pre-wrap}</style>
+<h1>Read-only release storage audit</h1><p>Keep the original harness open. Use disposable accounts only. This page reads all five application namespace prefixes in the current SDK account to detect foreign-owner keys, including late event IDs unknown to the original harness. No values, identifiers, documents or keys are exported. It cannot write, approve, submit or delete.</p>
+<p id="identity">Verifying session…</p><button id="signin">Sign in through Puter</button>
+<label>Account confirmed in original harness <select id="alias"><option>B</option><option>A</option></select></label>
+<label>Original run <input id="run" size="40" value="944582de-c134-4cd4-afb7-330a8266dd6b"></label>
+<button id="inspect" disabled>Inspect storage without changes</button><pre id="result">No inspection attempted.</pre>
+<script src="https://js.puter.com/v2/"></script><script type="module">
+import {captureSession,usePuterStore} from '/app/lib/puter.ts';
+import {auditReleaseRecords} from '/verification/release-storage-audit.ts';
+import {currentApplicationsRepository} from '/app/features/applications/repository.ts';
+const s=()=>usePuterStore.getState();let busy=false;const display=()=>{document.querySelector('#identity').textContent=s().isLoading?'Verifying session…':s().auth.isAuthenticated?'Verified signed-in SDK session. Confirm its A/B label in the original harness.':'Signed out — use Puter normal sign-in.';document.querySelector('#inspect').disabled=busy||s().isLoading||!s().auth.isAuthenticated;};usePuterStore.subscribe(display);s().init();document.querySelector('#signin').onclick=()=>s().auth.signIn();
+document.querySelector('#inspect').onclick=async()=>{if(busy)return;busy=true;display();const run=document.querySelector('#run').value.trim(),reportedAccount=document.querySelector('#alias').value;let stage='VERIFY_IDENTITY';try{
+ if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(run))throw new Error();await s().auth.checkAuthStatus();const guard=captureSession(),owner=s().auth.user.uuid;stage='READ_ALL_PRIVATE_NAMESPACE_PREFIXES';const groups=await Promise.all(['profile','jobs','match','prep','applications'].map(kind=>s().kv.list(`jp:v1:${kind}:*`,true)));guard();if(groups.some(g=>!Array.isArray(g)))throw new Error();const result=auditReleaseRecords(groups.flat(),owner,run);guard();let applicationState='NOT_INSPECTED';
+ if(result.status==='PASS'){stage='VERIFY_OWNER_APPLICATION_HISTORY';const history=await currentApplicationsRepository().load();guard();applicationState=history.applications.find(a=>a.id===`m6-${run}-app`)?.state||'ABSENT';if(applicationState==='ABSENT')throw new Error();}
+ document.querySelector('#result').textContent=JSON.stringify({run,reportedAccount,test:'Read-only post-race storage audit',...result,applicationState,evidence:'Counts and states only. PASS means no foreign-owner record found in this current snapshot; it does not certify wire timing or future writes.',at:new Date().toISOString()},null,2);
+ }catch{document.querySelector('#result').textContent=JSON.stringify({run,reportedAccount,test:'Read-only post-race storage audit',status:'BLOCKED',stage,evidence:'Read-only inspection could not be confirmed. No storage changes made.'},null,2);}finally{busy=false;display();}};
+</script></html>

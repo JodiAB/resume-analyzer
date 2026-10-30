@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Read-only auxiliary file audit</title>
+<style>body{font:16px system-ui;max-width:900px;margin:32px}button,input,select{padding:12px;margin:6px}pre{white-space:pre-wrap}</style>
+<h1>Read-only auxiliary file audit</h1><p>Keep the original harness open. Disposable accounts only. Inspect only the dedicated synthetic run auxiliary directory; no recursive scan, upload, deletion or approval. No paths, account identifiers or file contents are exported. A recognized A-only race file found in B is a release-blocking finding.</p>
+<p id="identity">Verifying session…</p><button id="signin">Sign in through Puter</button>
+<label>Account confirmed in original harness <select id="alias"><option>B</option><option>A</option></select></label>
+<label>Original run <input id="run" size="40" value="944582de-c134-4cd4-afb7-330a8266dd6b"></label>
+<button id="inspect" disabled>Inspect auxiliary files without changes</button><pre id="result">No inspection attempted.</pre>
+<script src="https://js.puter.com/v2/"></script><script type="module">
+import {captureSession,usePuterStore} from '/app/lib/puter.ts';
+import {auditAuxiliaryFiles} from '/verification/release-file-audit.ts';
+const s=()=>usePuterStore.getState();let busy=false;const display=()=>{document.querySelector('#identity').textContent=s().isLoading?'Verifying session…':s().auth.isAuthenticated?'Verified SDK session. Confirm A/B in the original harness.':'Signed out — sign in through Puter.';document.querySelector('#inspect').disabled=busy||s().isLoading||!s().auth.isAuthenticated;};usePuterStore.subscribe(display);s().init();document.querySelector('#signin').onclick=()=>s().auth.signIn();
+document.querySelector('#inspect').onclick=async()=>{if(busy)return;busy=true;display();const run=document.querySelector('#run').value.trim(),reportedAccount=document.querySelector('#alias').value;let stage='VERIFY_IDENTITY';try{
+ if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(run))throw new Error();await s().auth.checkAuthStatus();const guard=captureSession();stage='LIST_DEDICATED_RUN_DIRECTORY';let items;
+ try{items=await s().fs.readDir(`jobpilot/resumes/m6-${run}-aux`);}catch(error){if(['subject_does_not_exist','not_found'].includes(error?.code))items=[];else throw error;}guard();if(!Array.isArray(items)||items.length>100)throw new Error();const entries=[];stage='READ_BOUNDED_SYNTHETIC_FILES';
+ for(const item of items){const suffix=typeof item?.path==='string'?item.path.split(`/m6-${run}-aux/`):[];if(item?.is_dir||suffix.length!==2||!suffix[1]||suffix[1].includes('/')){entries.push({text:null});continue;}const blob=await s().fs.read(item.path);guard();if(!blob||blob.size>4096){entries.push({text:null});continue;}entries.push({text:await blob.text()});guard();}
+ const result=auditAuxiliaryFiles(entries,reportedAccount,run);guard();document.querySelector('#result').textContent=JSON.stringify({run,reportedAccount,test:'Read-only post-upload auxiliary file audit',...result,evidence:'Dedicated run directory snapshot only. No file contents or paths exported; no changes made. Does not establish network overlap.',at:new Date().toISOString()},null,2);
+ }catch{document.querySelector('#result').textContent=JSON.stringify({run,reportedAccount,test:'Read-only post-upload auxiliary file audit',status:'BLOCKED',stage,evidence:'File absence or ownership could not be confirmed. No changes made.'},null,2);}finally{busy=false;display();}};
+</script></html>

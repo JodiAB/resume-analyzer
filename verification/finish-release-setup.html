@@ -1,0 +1,24 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Finish synthetic verification setup</title>
+<style>body{font:16px system-ui;max-width:900px;margin:32px}button,input{padding:12px;margin:6px}pre{white-space:pre-wrap}</style>
+<h1>Finish synthetic verification setup</h1>
+<p>Keep the original verification tab open. Use disposable Account A only. This repair can record READY_FOR_REVIEW for this captured synthetic run; it cannot approve, submit, delete, or open an employer page.</p>
+<p id="identity">Verifying identity…</p><button id="signin">Sign in through Puter</button>
+<label>Original run <input id="run" size="40" value="944582de-c134-4cd4-afb7-330a8266dd6b"></label>
+<button id="finish" disabled>Finish A review-ready setup</button><pre id="result">No repair attempted.</pre>
+<script src="https://js.puter.com/v2/"></script><script type="module">
+import {captureSession,usePuterStore} from '/app/lib/puter.ts';
+import {currentApplicationsRepository} from '/app/features/applications/repository.ts';
+import {currentApplicationService} from '/app/features/applications/service.ts';
+import {packageIssues} from '/app/features/applications/model.ts';
+const s=()=>usePuterStore.getState();let busy=false;
+const display=()=>{document.querySelector('#identity').textContent=s().isLoading?'Verifying identity…':s().auth.isAuthenticated?'Verified signed-in session. Confirm Account A in the original tab.':'Signed out. Sign into disposable Account A through Puter.';document.querySelector('#finish').disabled=busy||s().isLoading||!s().auth.isAuthenticated;};
+usePuterStore.subscribe(display);s().init();document.querySelector('#signin').onclick=()=>s().auth.signIn();
+document.querySelector('#finish').onclick=async()=>{if(busy)return;busy=true;display();let stage='VERIFY_IDENTITY';const run=document.querySelector('#run').value.trim();try{
+ if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(run))throw new Error();await s().auth.checkAuthStatus();const guard=captureSession(),owner=s().auth.user.uuid;stage='LOAD_CAPTURED_SYNTHETIC_PACKAGE';const id=`m6-${run}-app`,h=await currentApplicationsRepository().load();guard();const app=h.applications.find(a=>a.id===id);
+ if(!app||app.ownerId!==owner||app.package.preparation.id!==`m6-${run}-prep`||app.package.preparation.context.job.sourceId!==`m6-${run}`)throw new Error();
+ stage='VERIFY_COMPLETE_DRAFT';if(!['DRAFT','READY_FOR_REVIEW'].includes(app.state)||packageIssues(app.package).length)throw new Error();
+ stage='RECORD_READY_FOR_REVIEW';if(app.state==='DRAFT'){const service=currentApplicationService();await service.persist(service.prepareAction(app.id,app.headId,{type:'READY'}));guard();}
+ stage='CONFIRM_READY_FOR_REVIEW';const final=await currentApplicationsRepository().load();guard();if(final.applications.find(a=>a.id===id)?.state!=='READY_FOR_REVIEW')throw new Error();
+ document.querySelector('#result').textContent=JSON.stringify({run,test:'A review-ready setup repaired',status:'PASS',evidence:'Current owner/source checks and complete document hashes verified; READY_FOR_REVIEW persisted and reread. No approval, submission, or deletion.',at:new Date().toISOString()},null,2);
+ }catch{document.querySelector('#result').textContent=JSON.stringify({run,test:'A review-ready setup repair',status:'BLOCKED',stage,evidence:'No approval or submission attempted. Keep both tabs open.'},null,2);}finally{busy=false;display();}};
+</script></html>

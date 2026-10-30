@@ -1,0 +1,7 @@
+import {it,expect} from 'vitest';
+import {auditReleaseRecords} from '../verification/release-storage-audit';
+const run='944582de-c134-4cd4-afb7-330a8266dd6b';
+const rows=()=>['profile','jobs','match','prep','applications'].map(kind=>({key:`jp:v1:${kind}:b:m6-${run}-${kind}`,value:JSON.stringify({ownerId:'b',id:`m6-${run}-${kind}`,...(kind==='applications'?{applicationId:`m6-${run}-app`,action:{type:'CREATE'}}:{})})}));
+it('reports only sanitized counts and event types for the current synthetic run',()=>{const r=auditReleaseRecords(rows(),'b',run);expect(r.status).toBe('PASS');expect(r.foreignOwnedRecords).toBe(0);expect(r.applicationEventTypes).toEqual(['CREATE']);expect(JSON.stringify(r)).not.toContain('ownerId');expect(JSON.stringify(r)).not.toContain('jp:v1:');});
+it('detects a late foreign-owned approval even when its key is outside the current owner prefix',()=>{const data=rows();data.push({key:'jp:v1:applications:a:late-unknown-id',value:JSON.stringify({ownerId:'a',applicationId:`m6-${run}-app`,action:{type:'APPROVE',privateData:'DO NOT EXPORT'}})});const r=auditReleaseRecords(data,'b',run);expect(r.status).toBe('FAIL');expect(r.foreignOwnedRecords).toBe(1);expect(JSON.stringify(r)).not.toContain('DO NOT EXPORT');});
+it('fails closed for malformed listings or absent synthetic namespace evidence',()=>{expect(auditReleaseRecords([],'b',run).status).toBe('BLOCKED');expect(auditReleaseRecords([{key:'jp:v1:applications:b:x',value:'invalid JSON'}],'b',run).status).toBe('BLOCKED');});

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { validFilePath } from './validation';
 
 declare global {
     interface Window {
@@ -10,12 +11,13 @@ declare global {
                 signOut: () => Promise<void>;
             };
             fs: {
+                stat: (path: string) => Promise<{ path: string }>;
                 write: (
                     path: string,
                     data: string | File | Blob
                 ) => Promise<File | undefined>;
                 read: (path: string) => Promise<Blob>;
-                upload: (file: File[] | Blob[]) => Promise<FSItem>;
+                upload: (file: File[] | Blob[], directory?: string, options?: { createMissingParents: boolean }) => Promise<FSItem>;
                 delete: (path: string) => Promise<void>;
                 readdir: (path: string) => Promise<FSItem[] | undefined>;
             };
@@ -34,7 +36,7 @@ declare global {
             kv: {
                 get: (key: string) => Promise<string | null>;
                 set: (key: string, value: string) => Promise<boolean>;
-                delete: (key: string) => Promise<boolean>;
+                del: (key: string) => Promise<boolean>;
                 list: (pattern: string, returnValues?: boolean) => Promise<string[]>;
                 flush: () => Promise<boolean>;
             };
@@ -61,7 +63,7 @@ interface PuterStore {
             data: string | File | Blob
         ) => Promise<File | undefined>;
         read: (path: string) => Promise<Blob | undefined>;
-        upload: (file: File[] | Blob[]) => Promise<FSItem | undefined>;
+        upload: (file: File[] | Blob[], directory?: string) => Promise<FSItem | undefined>;
         delete: (path: string) => Promise<void>;
         readDir: (path: string) => Promise<FSItem[] | undefined>;
     };
@@ -92,365 +94,170 @@ interface PuterStore {
         flush: () => Promise<boolean | undefined>;
     };
 
-    init: () => void;
+    init: () => (() => void);
     clearError: () => void;
 }
 
 const getPuter = (): typeof window.puter | null =>
     typeof window !== "undefined" && window.puter ? window.puter : null;
 
+async function bounded<T>(promise: Promise<T>, milliseconds = 30000): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([promise, new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Puter request timed out. Its remote outcome may be unknown.')), milliseconds);
+        })]);
+    } finally { clearTimeout(timer); }
+}
+
 export const usePuterStore = create<PuterStore>((set, get) => {
-    const setError = (msg: string) => {
-        set({
-            error: msg,
-            isLoading: false,
-            auth: {
-                user: null,
-                isAuthenticated: false,
-                signIn: get().auth.signIn,
-                signOut: get().auth.signOut,
-                refreshUser: get().auth.refreshUser,
-                checkAuthStatus: get().auth.checkAuthStatus,
-                getUser: get().auth.getUser,
-            },
-        });
-    };
-
+    let epoch = 0;
+    let initCleanup: (() => void) | undefined;
+    const clearUser = () => set({ auth: { ...get().auth, user: null, isAuthenticated: false } });
+    const failure = (message: string) => { clearUser(); set({ error: message, isLoading: false }); };
     const checkAuthStatus = async (): Promise<boolean> => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
+        const ticket = ++epoch;
+        clearUser();
+        set({ isLoading: true, error: null });
+        try {
+            const sdk = getPuter();
+            if (!sdk) throw new Error('Puter.js not available');
+            const signedIn = await bounded(sdk.auth.isSignedIn());
+            if (ticket !== epoch) return false;
+            const user = signedIn ? await bounded(sdk.auth.getUser()) : null;
+            if (ticket !== epoch) return false;
+            if (user && !user.uuid) throw new Error('Invalid Puter user');
+            set({ auth: { ...get().auth, user, isAuthenticated: Boolean(user) }, isLoading: false });
+            return Boolean(user);
+        } catch {
+            if (ticket === epoch) failure('Unable to verify your Puter session. Please sign in again.');
             return false;
         }
-
-        set({ isLoading: true, error: null });
-
+    };
+    const signIn = async () => {
+        const ticket = ++epoch;
+        clearUser(); set({ isLoading: true, error: null });
         try {
-            const isSignedIn = await puter.auth.isSignedIn();
-            if (isSignedIn) {
-                const user = await puter.auth.getUser();
-                set({
-                    auth: {
-                        user,
-                        isAuthenticated: true,
-                        signIn: get().auth.signIn,
-                        signOut: get().auth.signOut,
-                        refreshUser: get().auth.refreshUser,
-                        checkAuthStatus: get().auth.checkAuthStatus,
-                        getUser: () => user,
-                    },
-                    isLoading: false,
-                });
-                return true;
-            } else {
-                set({
-                    auth: {
-                        user: null,
-                        isAuthenticated: false,
-                        signIn: get().auth.signIn,
-                        signOut: get().auth.signOut,
-                        refreshUser: get().auth.refreshUser,
-                        checkAuthStatus: get().auth.checkAuthStatus,
-                        getUser: () => null,
-                    },
-                    isLoading: false,
-                });
-                return false;
+            const sdk = getPuter();
+            if (!sdk) throw new Error('SDK unavailable');
+            await bounded(sdk.auth.signIn(), 120000);
+            if (ticket === epoch) await checkAuthStatus();
+        } catch { if (ticket === epoch) failure('Sign in failed. Please retry.'); }
+    };
+    const signOut = async () => {
+        const ticket = ++epoch;
+        clearUser(); set({ isLoading: true, error: null });
+        try {
+            const sdk = getPuter();
+            if (!sdk) throw new Error('SDK unavailable');
+            await bounded(sdk.auth.signOut());
+            if (ticket === epoch) set({ isLoading: false });
+        } catch { if (ticket === epoch) failure('Sign out could not be confirmed. Private data is hidden; retry sign out.'); }
+    };
+    const refreshUser = async () => {
+        const ticket = epoch;
+        const owner = get().auth.user?.uuid;
+        if (!owner || get().isLoading) return;
+        try {
+            const sdk = getPuter();
+            const signedIn = sdk && await bounded(sdk.auth.isSignedIn());
+            const user = signedIn && sdk ? await bounded(sdk.auth.getUser()) : null;
+            if (ticket === epoch && user?.uuid !== owner) {
+                ++epoch; failure('Your Puter account changed. Please sign in again.');
             }
-        } catch (err) {
-            const msg =
-                err instanceof Error ? err.message : "Failed to check auth status";
-            setError(msg);
-            return false;
-        }
+        } catch { if (ticket === epoch) { ++epoch; failure('Unable to revalidate your session. Please sign in again.'); } }
     };
-
-    const signIn = async (): Promise<void> => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
+    const guarded = async <T,>(operation: (sdk: typeof window.puter, path?: string) => Promise<T>, milliseconds = 30000, file?: { path: string; allowRoot?: boolean }): Promise<T> => {
+        const state = get();
+        const owner = state.auth.user?.uuid;
+        const ticket = epoch;
+        const sdk = getPuter();
+        if (!sdk || state.isLoading || !state.auth.isAuthenticated || !owner) throw new Error('An authenticated session is required');
+        const verifyOwner = async () => {
+            let sdkOwner: string | undefined;
+            try {
+                if (await bounded(sdk.auth.isSignedIn())) sdkOwner = (await bounded(sdk.auth.getUser())).uuid;
+            } catch {
+                if (ticket === epoch) { ++epoch; failure('Unable to verify the active Puter account.'); }
+                throw new Error('Session changed. Please sign in again.');
+            }
+            if (ticket !== epoch || get().auth.user?.uuid !== owner) throw new Error('Session changed; operation stopped');
+            if (sdkOwner !== owner) {
+                ++epoch; failure('Your Puter account changed. Please sign in again.');
+                throw new Error('Session changed; operation stopped');
+            }
+        };
+        await verifyOwner();
+        let scopedPath: string | undefined;
+        if (file) {
+            const root = (await bounded(sdk.fs.stat('.'))).path.replace(/\/$/, '');
+            await verifyOwner();
+            if (!validFilePath(root) || !/^\/[^/]+\/AppData\/[^/]+$/.test(root)) throw new Error('Cannot verify application storage ownership');
+            const relative = file.path.replace(/^\.\//, '').replace(/\/$/, '');
+            const isRoot = relative === '' || relative === '.' || relative === root;
+            if (isRoot && !file.allowRoot) throw new Error('Root file operations are forbidden');
+            scopedPath = isRoot ? root : relative.startsWith('/') ? relative : `${root}/${relative}`;
+            if (!validFilePath(scopedPath) || (scopedPath !== root && !scopedPath.startsWith(root + '/'))) throw new Error('File is outside the authenticated application storage');
         }
-
-        set({ isLoading: true, error: null });
-
-        try {
-            await puter.auth.signIn();
-            await checkAuthStatus();
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : "Sign in failed";
-            setError(msg);
-        }
+        const result = await bounded(operation(sdk, scopedPath), milliseconds);
+        // A focus event is not guaranteed while a request is pending. Recheck the
+        // SDK itself before returning private data or authorizing the next stage.
+        await verifyOwner();
+        if (ticket !== epoch || !get().auth.isAuthenticated || get().auth.user?.uuid !== owner) throw new Error('Session changed; result discarded');
+        return result;
     };
-
-    const signOut = async (): Promise<void> => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-
-        set({ isLoading: true, error: null });
-
-        try {
-            await puter.auth.signOut();
-            set({
-                auth: {
-                    user: null,
-                    isAuthenticated: false,
-                    signIn: get().auth.signIn,
-                    signOut: get().auth.signOut,
-                    refreshUser: get().auth.refreshUser,
-                    checkAuthStatus: get().auth.checkAuthStatus,
-                    getUser: () => null,
-                },
-                isLoading: false,
-            });
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : "Sign out failed";
-            setError(msg);
-        }
-    };
-
-    const refreshUser = async (): Promise<void> => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-
-        set({ isLoading: true, error: null });
-
-        try {
-            const user = await puter.auth.getUser();
-            set({
-                auth: {
-                    user,
-                    isAuthenticated: true,
-                    signIn: get().auth.signIn,
-                    signOut: get().auth.signOut,
-                    refreshUser: get().auth.refreshUser,
-                    checkAuthStatus: get().auth.checkAuthStatus,
-                    getUser: () => user,
-                },
-                isLoading: false,
-            });
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : "Failed to refresh user";
-            setError(msg);
-        }
-    };
-
-    const init = (): void => {
-        const puter = getPuter();
-        if (puter) {
+    const init = () => {
+        initCleanup?.();
+        let stopped = false;
+        const ready = () => {
+            if (stopped || !getPuter()) return;
+            stopTimers();
             set({ puterReady: true });
-            checkAuthStatus();
-            return;
-        }
-
-        const interval = setInterval(() => {
-            if (getPuter()) {
-                clearInterval(interval);
-                set({ puterReady: true });
-                checkAuthStatus();
-            }
-        }, 100);
-
-        setTimeout(() => {
-            clearInterval(interval);
-            if (!getPuter()) {
-                setError("Puter.js failed to load within 10 seconds");
-            }
-        }, 10000);
+            void checkAuthStatus();
+        };
+        const interval = setInterval(ready, 100);
+        const timeout = setTimeout(() => { stopTimers(); failure('Puter.js failed to load. Reload to retry.'); }, 10000);
+        const stopTimers = () => { clearInterval(interval); clearTimeout(timeout); };
+        const cleanup = () => { stopped = true; stopTimers(); ++epoch; clearUser(); };
+        initCleanup = cleanup;
+        ready();
+        return cleanup;
     };
-
-    const write = async (path: string, data: string | File | Blob) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.fs.write(path, data);
-    };
-
-    const readDir = async (path: string) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.fs.readdir(path);
-    };
-
-    const readFile = async (path: string) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.fs.read(path);
-    };
-
-    const upload = async (files: File[] | Blob[]) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.fs.upload(files);
-    };
-
-    const deleteFile = async (path: string) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.fs.delete(path);
-    };
-
-    const chat = async (
-        prompt: string | ChatMessage[],
-        imageURL?: string | PuterChatOptions,
-        testMode?: boolean,
-        options?: PuterChatOptions
-    ) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        // return puter.ai.chat(prompt, imageURL, testMode, options);
-        return puter.ai.chat(prompt, imageURL, testMode, options) as Promise<
-            AIResponse | undefined
-        >;
-    };
-
-    const feedback = async (path: string, message: string) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-
-        return puter.ai.chat(
-            [
-                {
-                    role: "user",
-                    content: [
-                        {
-                            type: "file",
-                            puter_path: path,
-                        },
-                        {
-                            type: "text",
-                            text: message,
-                        },
-                    ],
-                },
-            ],
-            { model: "grok-3" }
-        ) as Promise<AIResponse | undefined>;
-    };
-
-    const img2txt = async (image: string | File | Blob, testMode?: boolean) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.ai.img2txt(image, testMode);
-    };
-
-    const getKV = async (key: string) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.kv.get(key);
-    };
-
-    const setKV = async (key: string, value: string) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.kv.set(key, value);
-    };
-
-    const deleteKV = async (key: string) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.kv.delete(key);
-    };
-
-    const listKV = async (pattern: string, returnValues?: boolean) => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        if (returnValues === undefined) {
-            returnValues = false;
-        }
-        return puter.kv.list(pattern, returnValues);
-    };
-
-    const flushKV = async () => {
-        const puter = getPuter();
-        if (!puter) {
-            setError("Puter.js not available");
-            return;
-        }
-        return puter.kv.flush();
-    };
-
     return {
-        isLoading: true,
-        error: null,
-        puterReady: false,
-        auth: {
-            user: null,
-            isAuthenticated: false,
-            signIn,
-            signOut,
-            refreshUser,
-            checkAuthStatus,
-            getUser: () => get().auth.user,
-        },
+        isLoading: true, error: null, puterReady: false,
+        auth: { user: null, isAuthenticated: false, signIn, signOut, refreshUser, checkAuthStatus, getUser: () => get().auth.user },
         fs: {
-            write: (path: string, data: string | File | Blob) => write(path, data),
-            read: (path: string) => readFile(path),
-            readDir: (path: string) => readDir(path),
-            upload: (files: File[] | Blob[]) => upload(files),
-            delete: (path: string) => deleteFile(path),
+            write: (path, data) => guarded((sdk, scoped) => sdk.fs.write(scoped!, data), 30000, { path }),
+            read: path => guarded((sdk, scoped) => sdk.fs.read(scoped!), 30000, { path }),
+            readDir: path => guarded((sdk, scoped) => sdk.fs.readdir(scoped!), 30000, { path, allowRoot: true }),
+            upload: (files, directory = '.') => guarded((sdk, scoped) => sdk.fs.upload(files, scoped, { createMissingParents: true }), 30000, { path: directory, allowRoot: true }),
+            delete: path => guarded((sdk, scoped) => sdk.fs.delete(scoped!), 30000, { path }),
         },
         ai: {
-            chat: (
-                prompt: string | ChatMessage[],
-                imageURL?: string | PuterChatOptions,
-                testMode?: boolean,
-                options?: PuterChatOptions
-            ) => chat(prompt, imageURL, testMode, options),
-            feedback: (path: string, message: string) => feedback(path, message),
-            img2txt: (image: string | File | Blob, testMode?: boolean) =>
-                img2txt(image, testMode),
+            chat: (prompt, imageURL, testMode, options) => guarded(sdk => sdk.ai.chat(prompt, imageURL, testMode, options) as Promise<AIResponse>, 120000),
+            feedback: (path, message) => guarded((sdk, scoped) => sdk.ai.chat([{ role: 'user', content: [{ type: 'file', puter_path: scoped! }, { type: 'text', text: message }] }], { model: 'grok-3' }) as Promise<AIResponse>, 120000, { path }),
+            img2txt: (image, testMode) => guarded(sdk => sdk.ai.img2txt(image, testMode), 120000),
         },
         kv: {
-            get: (key: string) => getKV(key),
-            set: (key: string, value: string) => setKV(key, value),
-            delete: (key: string) => deleteKV(key),
-            list: (pattern: string, returnValues?: boolean) =>
-                listKV(pattern, returnValues),
-            flush: () => flushKV(),
+            get: key => guarded(sdk => sdk.kv.get(key)),
+            set: (key, value) => guarded(sdk => sdk.kv.set(key, value)),
+            delete: key => guarded(sdk => sdk.kv.del(key)),
+            list: (pattern, returnValues = false) => guarded(sdk => sdk.kv.list(pattern, returnValues)),
+            flush: async () => { throw new Error('Broad deletion is disabled. Use scoped resume deletion.'); },
         },
-        init,
-        clearError: () => set({ error: null }),
+        init, clearError: () => set({ error: null }),
     };
 });
+
+// Capture once per UI operation; every asynchronous stage checks the same session.
+export function captureSession(): () => void {
+    const state = usePuterStore.getState();
+    const owner = state.auth.user?.uuid;
+    const auth = state.auth;
+    const assert = () => {
+        const current = usePuterStore.getState();
+        if (!owner || current.isLoading || !current.auth.isAuthenticated || current.auth !== auth || current.auth.user?.uuid !== owner) throw new Error('Session changed. Please sign in and retry.');
+    };
+    assert();
+    return assert;
+}

@@ -7,27 +7,31 @@ interface FileUploaderProps {
 }
 
 const FileUploader = ({ onFileSelect }: FileUploaderProps) => {
+    const [file, setFile] = useState<File | null>(null);
+    const [error, setError] = useState('');
     const onDrop = useCallback((acceptedFiles: File[]) => {
-        const file = acceptedFiles[0] || null;
-
-        onFileSelect?.(file);
+        const selected = acceptedFiles[0] || null;
+        setFile(selected); setError('');
+        onFileSelect?.(selected);
     }, [onFileSelect]);
 
     const maxFileSize = 20 * 1024 * 1024; // 20MB in bytes
 
-    const {getRootProps, getInputProps, isDragActive, acceptedFiles} = useDropzone({
+    const {getRootProps, getInputProps, isDragActive} = useDropzone({
         onDrop,
+        onDropRejected: () => { setError("Choose one PDF up to 20 MB."); setFile(null); onFileSelect?.(null); },
         multiple: false,
         accept: { 'application/pdf': ['.pdf']},
         maxSize: maxFileSize,
     })
 
-    const file = acceptedFiles[0] || null;
+
 
 
 
     return (
         <div className="w-full gradient-border">
+            {error && <p role="alert">{error}</p>}
             <div {...getRootProps()}>
                 <input {...getInputProps()} />
 
@@ -45,7 +49,8 @@ const FileUploader = ({ onFileSelect }: FileUploaderProps) => {
                                     </p>
                                 </div>
                             </div>
-                            <button className="p-2 cursor-pointer" onClick={(e) => {
+                            <button type="button" aria-label="Remove selected PDF" className="p-2 cursor-pointer" onClick={(e) => {
+                                e.stopPropagation(); setFile(null);
                                 onFileSelect?.(null)
                             }}>
                                 <img src="/icons/cross.svg" alt="remove" className="w-4 h-4" />

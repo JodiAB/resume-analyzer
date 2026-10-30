@@ -35,6 +35,8 @@ interface ChatMessage {
 }
 
 interface PuterChatOptions {
+  normalize?: boolean;
+  outputFormat?: { type: 'json_schema'; name?: string; strict?: boolean; schema: Record<string, unknown> };
   model?: string;
   stream?: boolean;
   max_tokens?: number;

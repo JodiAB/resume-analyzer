@@ -1,0 +1,42 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Synthetic PDF verification</title>
+<style>body{font:16px system-ui;margin:32px}img{max-width:650px;border:1px solid #ccc}pre{white-space:pre-wrap}button{padding:12px}</style>
+<h1>Local synthetic PDF verification</h1><p>Local fixture files only. No Puter requests or personal documents.</p>
+<button id="run">Run synthetic PDF checks</button><pre id="results">Not run</pre><img id="preview" alt="Synthetic PDF preview" hidden>
+<script type="module">
+import { convertPdfToImage } from '/app/lib/pdf2img.ts';
+import * as pdfjs from 'pdfjs-dist/build/pdf.mjs';
+const output = document.querySelector('#results');
+const button = document.querySelector('#run');
+button.onclick = async () => {
+  button.disabled = true;
+  const results = [];
+  const record = (test, pass, details) => { results.push({test, pass, details}); output.textContent = JSON.stringify(results, null, 2); };
+  const file = async name => new File([await (await fetch('/tests/fixtures/pdf/' + name)).blob()], name, {type:'application/pdf'});
+  try {
+    const valid = await file('synthetic-two-page.pdf');
+    const image = await convertPdfToImage(valid);
+    record('actual browser preview', Boolean(image.file && image.file.size > 1000), image.error || image.file?.size);
+    if (image.file) { const preview = document.querySelector('#preview'); preview.src = image.imageUrl; preview.hidden = false; }
+    const task = pdfjs.getDocument({data: await valid.arrayBuffer()});
+    try {
+      const pdf = await task.promise; const pages = [];
+      for(let page=1;page<=pdf.numPages;page++) pages.push((await (await pdf.getPage(page)).getTextContent()).items.map(item=>item.str||'').join(' '));
+      record('actual two-page extraction', pages.length===2 && pages[0].includes('PAGE ONE') && pages[1].includes('PAGE TWO'), pages);
+    } finally { await task.destroy(); }
+    for (const name of ['malformed.pdf','encrypted.pdf','oversized-page.pdf']) {
+      const bad = await convertPdfToImage(await file(name));
+      record(name+' rejected', bad.file===null && Boolean(bad.error), bad.error);
+      const retry = await convertPdfToImage(valid);
+      record(name+' recovery', Boolean(retry.file), retry.error || retry.file?.size);
+      if (retry.imageUrl) URL.revokeObjectURL(retry.imageUrl);
+    }
+    const scanTask = pdfjs.getDocument({data: await (await file('scan-no-text.pdf')).arrayBuffer()});
+    try {
+      const content = await (await (await scanTask.promise).getPage(1)).getTextContent();
+      record('scan has no invented text', content.items.length===0, content.items.length);
+    } finally { await scanTask.destroy(); }
+    output.dataset.complete = 'true';
+  } catch(error) { record('harness error',false,String(error)); output.dataset.complete = 'true'; }
+  finally { button.disabled=false; }
+};
+</script></html>

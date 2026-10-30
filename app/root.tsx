@@ -28,12 +28,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
     const { init } = usePuterStore();
 
     useEffect(() => {
-        init();
+        const cleanup = init();
         const script = document.createElement('script');
         script.src = 'https://js.puter.com/v2/';
         script.async = true;
         document.body.appendChild(script);
-        return () => document.body.removeChild(script);
+        const refresh = () => { if (document.visibilityState === 'visible') void usePuterStore.getState().auth.refreshUser(); };
+        window.addEventListener('focus', refresh);
+        document.addEventListener('visibilitychange', refresh);
+        return () => {
+            window.removeEventListener('focus', refresh);
+            document.removeEventListener('visibilitychange', refresh);
+            cleanup(); script.remove();
+        };
     }, [init]);
 
     return (

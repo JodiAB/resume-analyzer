@@ -4,3 +4,15 @@
 # React Router
 /.react-router/
 /build/
+
+# Local-only credentials, diagnostics and generated acceptance artifacts
+.env
+.env.*
+*.log
+*.har
+/outputs/
+/coverage/
+/playwright-report/
+/test-results/
+/.auth/
+/storage-state*.json

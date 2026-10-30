@@ -1,6 +1,8 @@
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { parseResume } from "~/lib/validation";
+import PrivateBoundary from "~/components/PrivateBoundary";
+import { Link, useNavigate, useParams } from "react-router";
 import { useEffect, useState } from "react";
-import { usePuterStore } from "~/lib/puter";
+import { captureSession, usePuterStore } from "~/lib/puter";
 import Summary from "~/components/Summary";
 import ATS from "~/components/ATS";
 import Details from "~/components/Details";
@@ -44,54 +46,34 @@ const Resume = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!isLoading && !auth.isAuthenticated) {
-      navigate(`/auth?next=/resume/${id}`);
-    }
-  }, [isLoading, auth.isAuthenticated, id, navigate]);
-
-  useEffect(() => {
+    let active = true;
+    const urls: string[] = [];
+    const assertSession = captureSession();
+    setImageUrl(''); setResumeUrl(''); setFeedback(null); setError(null);
     const loadResume = async () => {
       try {
-        const resume = await kv.get(`resume:${id}`);
-        if (!resume) {
-          setError("Resume not found");
-          return;
-        }
-
-        const data = JSON.parse(resume);
-
-        if (!data.feedback || !data.feedback.ATS) {
-          setError("Invalid resume data: missing feedback or ATS");
-          return;
-        }
-
+        if (!id || !/^[a-zA-Z0-9-]{1,100}$/.test(id)) throw new Error('Invalid identifier');
+        const raw = await kv.get(`resume:${id}`);
+        assertSession();
+        if (!raw) throw new Error('Missing record');
+        const data = parseResume(raw);
+        if (data.id !== id) throw new Error('Mismatched record');
         const resumeBlob = await fs.read(data.resumePath);
-        if (!resumeBlob) {
-          setError("Failed to load resume PDF");
-          return;
-        }
-
-        const pdfBlob = new Blob([resumeBlob], { type: "application/pdf" });
-        const resumeUrl = URL.createObjectURL(pdfBlob);
-        setResumeUrl(resumeUrl);
-
+        assertSession();
+        if (!active) return;
+        if (!resumeBlob) throw new Error('Missing PDF');
         const imageBlob = await fs.read(data.imagePath);
-        if (!imageBlob) {
-          setError("Failed to load resume image");
-          return;
-        }
-
-        const imageUrl = URL.createObjectURL(imageBlob);
-        setImageUrl(imageUrl);
-
-        setFeedback(data.feedback);
-      } catch (err) {
-        console.error("Error loading resume:", err);
-        setError("Failed to load resume data");
-      }
+        assertSession();
+        if (!active) return;
+        if (!imageBlob) throw new Error('Missing preview');
+        const pdfUrl = URL.createObjectURL(new Blob([resumeBlob], { type: 'application/pdf' }));
+        const previewUrl = URL.createObjectURL(imageBlob);
+        urls.push(pdfUrl, previewUrl);
+        setResumeUrl(pdfUrl); setImageUrl(previewUrl); setFeedback(data.feedback);
+      } catch { if (active) setError('Unable to load this resume. It may be missing or have invalid analysis data.'); }
     };
-
-    loadResume();
+    void loadResume();
+    return () => { active = false; urls.forEach(url => URL.revokeObjectURL(url)); };
   }, [id, fs, kv]);
 
   return (
@@ -118,10 +100,8 @@ const Resume = () => {
                   src={imageUrl}
                   className="w-full h-full object-contain rounded-2xl"
                   title="resume"
-                  onError={(e) => {
-                    console.error(`Failed to load image: ${imageUrl}`);
-                    e.currentTarget.src = "https://via.placeholder.com/150";
-                  }}
+                  alt="Resume preview"
+                  onError={() => setError('Unable to display resume preview.')}
                 />
               </a>
             </div>
@@ -157,4 +137,6 @@ const Resume = () => {
   );
 };
 
-export default Resume;
+
+
+export default function ProtectedResume() { return <PrivateBoundary><Resume /></PrivateBoundary>; }

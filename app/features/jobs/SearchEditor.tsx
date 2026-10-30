@@ -1,0 +1,19 @@
+import type { SearchPreferences } from './preferences';
+export default function SearchEditor({ value: p, change, save }: { value: SearchPreferences; change: (p: SearchPreferences) => void; save: () => void }) {
+  const patch = (v: Partial<SearchPreferences>) => change({ ...p,...v });
+  const csv = (s: string) => s.split(',').map(x => x.trim()).filter(Boolean);
+  const checkStyle = { width:'1rem',height:'1rem',padding:0,boxShadow:'none' };
+  return <details className="border border-gray-200 rounded-xl p-5 bg-white w-full"><summary className="font-semibold cursor-pointer">Search preferences (editable)</summary>
+    <p className="my-3">Profile preferences are used when no discovery preferences have been saved. All filters run locally; candidate information is never sent to feeds. Undisclosed salary and unknown eligibility remain reviewable.</p>
+    <div className="grid md:grid-cols-2 gap-4">
+      {([['titles','Job titles (comma separated)'],['locations','Preferred locations (comma separated)'],['overlapZones','Preferred overlap zones (IANA, comma separated)'],['lacksAuthorization','Work authorization I explicitly lack (country names)']] as const).map(([key,label]) => <div className="form-div" key={key}><label htmlFor={`search-${key}`}>{label}</label><input id={`search-${key}`} key={p[key].join('|')} defaultValue={p[key].join(', ')} maxLength={3000} onBlur={e => patch({ [key]: csv(e.target.value) })} /></div>)}
+      {([['country','My current country'],['timeZone','My time zone (IANA)'],['locationQuery','Job location text filter (not eligibility)'],['hoursQuery','Hours / overlap text filter (unknown hours retained)']] as const).map(([key,label]) => <div className="form-div" key={key}><label htmlFor={`search-${key}`}>{label}</label><input id={`search-${key}`} value={p[key]} maxLength={500} onChange={e=>patch({[key]:e.target.value})} /></div>)}
+      {([['days','Publication window (days, 1–30)'],['fullTimeTarget','Full-time salary target'],['partTimeTarget','Part-time salary target (0 for no target)']] as const).map(([key,label])=><div className="form-div" key={key}><label htmlFor={`search-${key}`}>{label}</label><input id={`search-${key}`} type="number" min={key==='days'?1:0} max={key==='days'?30:1e12} value={p[key]} onChange={e=>patch({[key]:Number(e.target.value)})} /></div>)}
+      <div className="form-div"><label htmlFor="search-currency">Target currency</label><input id="search-currency" maxLength={3} value={p.salaryCurrency} onChange={e=>patch({salaryCurrency:e.target.value.toUpperCase()})}/></div>
+      <div className="form-div"><label htmlFor="search-period">Target salary period</label><select id="search-period" value={p.salaryPeriod} onChange={e=>patch({salaryPeriod:e.target.value as 'month'})}><option value="month">month</option><option value="year">year</option><option value="hour">hour</option></select></div>
+    </div>
+    <div className="flex flex-col gap-3 my-4">{([['remoteOnly','Prefer remote work'],['internationalOnly','International employers (unknown headquarters retained)'],['includeUnknownDates','Include unknown / unverified posting dates'],['hideBelowSalary','Hide disclosed comparable salaries below my target'],['filterOverlap','Filter explicit overlap-zone hints against my preferred zones'],['showIneligible','Show confirmed ineligible / expired jobs for inspection']] as const).map(([key,label])=><label className="flex items-center gap-2" key={key}><input type="checkbox" style={checkStyle} checked={p[key]} onChange={e=>patch({[key]:e.target.checked})}/>{label}</label>)}</div>
+    <p>Location and overlap preferences are hints, not hiring eligibility. Use the hours text filter for disclosed working-time restrictions; exact time-zone intersection belongs to later matching. No currency exchange is assumed.</p>
+    <button type="button" className="border rounded-lg p-2 mt-3" onClick={save}>Save search preferences privately</button>
+  </details>;
+}

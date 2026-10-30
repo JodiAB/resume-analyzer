@@ -1,3 +1,4 @@
+import { safeNext } from "~/lib/validation";
 import { usePuterStore } from "~/lib/puter";
 import { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router";
@@ -8,20 +9,18 @@ export const meta = () => [
 ];
 
 const Auth = () => {
-  const { isLoading, auth } = usePuterStore();
+  const { isLoading, auth, error } = usePuterStore();
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Parse the `next` query param
-  const nextParam = location.search.split("next=")[1];
-  const next = nextParam ? decodeURIComponent(nextParam) : "/";
+  const next = safeNext(location.search);
 
   useEffect(() => {
     // Only redirect if we're authenticated, done loading, and not trying to stay on /auth
     if (auth.isAuthenticated && !isLoading && next !== "/auth") {
       navigate(next);
     }
-  }, [auth.isAuthenticated, isLoading, next]);
+  }, [auth.isAuthenticated, isLoading, next, navigate]);
 
   return (
     <main className="bg-[url('/images/bg-auth.svg')] bg-cover min-h-screen flex items-center justify-center">
@@ -32,6 +31,7 @@ const Auth = () => {
             <h2>Log In to Continue Your Job Journey</h2>
           </div>
           <div>
+            {error && <p role="alert">{error}</p>}
             {isLoading ? (
               <button className="auth-button animate-pulse">
                 <p>Signing you in...</p>
